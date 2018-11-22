@@ -8,7 +8,8 @@
 # +--+--+--+--+--+--+--+--+--+--+--+--+--+
 #               Jianing Yang @ 16 Feb, 2018
 #
-from tornado_battery.redis import register_redis_options, with_redis
+from tornado_battery.redis import (register_redis_options, use_redis,
+                                   with_redis, with_redis_conn)
 from tornado_battery.redis import RedisConnector, RedisConnectorError
 import pytest
 
@@ -41,6 +42,16 @@ async def test_get_command(redis):
 async def test_decorator(redis):
 
     @with_redis(name='test')
+    async def _read(redis):
+        value = await redis.execute('set', 'redis_decorator_value', '1983')
+        return value
+    assert (await _read()) == 'OK'
+
+
+async def test_decorator2(redis):
+
+    @use_redis(name='test')
+    @with_redis_conn
     async def _read(redis):
         value = await redis.execute('set', 'redis_decorator_value', '1983')
         return value

@@ -9,9 +9,11 @@
 #               Jianing Yang @ 12 Feb, 2018
 #
 from .exception import ServerException
-from .pattern import NamedSingletonMixin
+from .pattern import NamedSingletonMixin, SingletonMixin
+from . import TaskLocals
 from tornado.options import define, options
 from urllib.parse import urlparse
+from contextlib import contextmanager
 
 import aioredis
 import asyncio
@@ -56,6 +58,31 @@ class RedisConnector(NamedSingletonMixin):
         )
 
 
+class RedisConnectorManager(SingletonMixin):
+
+    local_key = 'tornado_battery.redis.manager'
+
+    def __init__(self):
+        self.task_locals = TaskLocals(loop=None)
+
+    @contextmanager
+    def use(self, name):
+        conn_stack = self.task_locals.get(self.local_key, None)
+        if conn_stack is None:
+            conn_stack = []
+            self.task_locals.set(self.local_key, conn_stack)
+        conn_stack.append(RedisConnector.instance(name).connection())
+        try:
+            yield
+        finally:
+            conn_stack.pop()
+
+    def get(self):
+        conn_stack = self.task_locals.get(self.local_key, None)
+        assert conn_stack is not None, 'no redis manager is in use'
+        return conn_stack[-1]
+
+
 def option_name(instance: str, option: str) -> str:
     return f'redis-{instance}-{option}'
 
@@ -70,6 +97,20 @@ def register_redis_options(instance: str='master',
            default=[1, 2],
            group=f'{instance} redis',
            help=f'# of redis connections for {instance}')
+
+
+def use_redis(name: str):
+
+    def wrapper(function):
+
+        @functools.wraps(function)
+        async def f(*args, **kwargs):
+            with RedisConnectorManager.instance().use(name):
+                retval = await function(*args, **kwargs)
+            return retval
+        return f
+
+    return wrapper
 
 
 def with_redis(name: str):
@@ -88,6 +129,20 @@ def with_redis(name: str):
         return f
 
     return wrapper
+
+
+def with_redis_conn(function):
+
+    @functools.wraps(function)
+    async def f(*args, **kwargs):
+        async with RedisConnectorManager.instance().get() as redis:
+            if 'redis' in kwargs:
+                raise RedisConnectorError(
+                    f'duplicated database argument for redis')
+            kwargs.update({'redis': aioredis.Redis(redis)})
+            retval = await function(*args, **kwargs)
+            return retval
+    return f
 
 
 def connect_redis(name: str):
